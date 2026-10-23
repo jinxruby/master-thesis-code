@@ -1,0 +1,436 @@
+---
+title: "CombinedCorrectResolutions"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(FNN)
+library(RANN)
+```
+
+```{r}
+citation(package = "RANN")
+```
+
+
+```{r, echo = FALSE}
+ship <- read_csv("cleanshipping.csv")
+ship <- ship |>
+	dplyr::select(-...1)
+rawtemp <- read_csv("SST.csv")
+rawchlorophyll <- read_csv("chlorophylla_improved.csv")
+#rawpopulation <- read_csv("rawpopulation.csv")
+#rawpopulation <- rawpopulation |>
+#  dplyr::select(-...1)
+rawpopulation <- read_csv("rawpopulationinvert.csv")
+rawpopulation <- rawpopulation |>
+  dplyr::select(-...1)
+fishing <- read_csv("cleanfishing.csv")
+fishing <- fishing |>
+	dplyr::select(-...1)
+currents <- read_csv("cleancurrents.csv")
+currents <- currents |>
+	dplyr::select(-...1)
+#bioregions <- read_csv("bioregionsFish.csv")
+bioregions <- read_csv("bioregionsInvert.csv")
+#mpa <- read_csv("mpaFish.csv")
+#mpa <- mpa |>
+#  dplyr::select(-...1)
+mpa <- read_csv("mpaInvert.csv")
+mpa <- mpa |>
+  dplyr::select(-...1)
+#Master <- read_csv("fishMaster.csv")
+#Master <- Master |>
+#  dplyr::select(-...1)
+Master <- read_csv("invertMaster.csv")
+Master <- Master |>
+  dplyr::select(-...1)
+Master$year_month <- format(as.Date(Master$survey_date, format="%Y-%m-%d"),"%Y_%m")
+#heatwave <- read_csv("MHWFish.csv")
+heatwave <- read_csv("MHWInvert.csv")
+```
+
+
+```{r}
+Master <- Master |>
+  filter(between(as.integer(substr(year_month, 1, 4)), 2013, 2022))
+Master <- Master |>
+  mutate(year = substr(year_month, 1, 4),
+         month = substr(year_month, 6, 7))
+Master <- Master |>
+  relocate(year_month, year, month, .after = longitude)
+```
+
+
+# Combining by survey_id: MPA status, Population, MHW, and Bioregions
+
+```{r}
+combined <- Master |>
+  left_join(mpa, by = 'survey_id')
+combined <- combined |>
+  left_join(rawpopulation, by = 'survey_id')
+combined <- combined |>
+  rename(population_50km = population)
+combined <- combined |>
+  relocate(iucn_protection_status, population_50km, .after = month)
+combined <- combined |>
+  left_join(bioregions, by = "survey_id")
+combined <- combined |>
+  relocate(population_50km, bioregion, .after = month)
+```
+
+```{r}
+combined <- combined |>
+  mutate(protection = case_when(
+    iucn_protection_status == "unprotected" ~ "take",
+    iucn_protection_status != "unprotected" ~ "no take"
+  ))
+
+combined <- combined |>
+  relocate(protection, .after = iucn_protection_status)
+```
+
+```{r}
+heatwave <- heatwave |>
+  dplyr::select(survey_id, total_mhw_intensity, mhw_days, n_mhw_events, n_5day_mhw_events, peak_intensity_sum)
+combined <- combined |>
+  left_join(heatwave, by = "survey_id")
+combined <- combined |>
+  relocate(total_mhw_intensity, mhw_days, n_mhw_events, n_5day_mhw_events, peak_intensity_sum, .after = protection)
+```
+
+# Taking Monthly Average
+
+```{r}
+combined <- combined |>
+  group_by(latitude, longitude, year_month) |>
+  summarise(across(where(is.numeric) & !c(survey_id, year, population_50km, year, month, ), 
+                   \(x) mean(x, na.rm = TRUE)),
+            population_50km = first(population_50km),
+            year = first(year),
+            month = first(month),
+            survey_id = first(survey_id),
+            site_name = first(site_name),
+            location = first(location),
+            iucn_protection_status = first(iucn_protection_status),
+            mpa_name = first(mpa_name),
+            mpa_type = first(mpa_type),
+            protection = first(protection),
+            total_mhw_intensity = mean(total_mhw_intensity),
+            n_mhw_events = mean(n_mhw_events),
+            mhw_days = mean(mhw_days),
+            depth = mean(depth),
+            bioregion = first(bioregion),
+            n_5day_mhw_events = mean(n_5day_mhw_events),
+            peak_intensity_sum = mean(peak_intensity_sum),
+            .groups = "drop")
+
+combined <- combined |>
+  relocate(survey_id, site_name, location, .before = latitude)
+
+combined <- combined |>
+  relocate(year, month, .after = year_month)
+
+combined <- combined |>
+  relocate(population_50km, iucn_protection_status, .after = month)
+
+combined <- combined |>
+  relocate(protection, .after = iucn_protection_status)
+
+combined <- combined |>
+  relocate(total_mhw_intensity, n_mhw_events, mhw_days, n_5day_mhw_events, peak_intensity_sum, .after = protection)
+```
+
+
+# Combining After Average: Temperature, Chloro, Fishing, Shipping
+## Temperature
+
+```{r}
+#fixing character sea surface temperature columns for NA removal
+rawtemp$sea_surface_temperature <- as.numeric(rawtemp$sea_surface_temperature)
+rawtemp$sea_surface_temperature_anomaly <- as.numeric(rawtemp$sea_surface_temperature_anomaly)
+#removing NA values
+cleantemp <- rawtemp[complete.cases(rawtemp[ , c('sea_surface_temperature', 'sea_surface_temperature_anomaly')]), ]
+#creating a month year column
+cleantemp$time <- as.POSIXct(cleantemp$time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+cleantemp$year_month <- format(cleantemp$time, "%Y_%m")
+#renaming lat and lon for next step
+cleantemp <- cleantemp |>
+  rename(temp_lat = latitude,
+         temp_lon = longitude)
+```
+
+```{r}
+combined <- combined |>
+  group_by(year_month) |>
+  group_modify(~ {
+    # filter predictor to same time period
+    pred_subset <- cleantemp |> 
+      filter(year_month == .y$year_month) #.y is the set of grouping variable values (in this case, values from the combined dataset)
+    
+    # find nearest neighbor
+    nn <- nn2(
+      data = pred_subset[, c("temp_lon", "temp_lat")],
+      query = .x[, c("longitude", "latitude")], #.x represents the grouping dataset
+      k = 1
+    )
+    
+    # add matched temperature value
+    .x$sea_surface_temperature <- pred_subset$sea_surface_temperature[nn$nn.idx]
+    .x$sea_surface_temperature_anomaly <- pred_subset$sea_surface_temperature_anomaly[nn$nn.idx]
+    .x
+  }) |>
+  ungroup()
+
+combined <- combined |>
+  relocate(sea_surface_temperature, sea_surface_temperature_anomaly, .after = iucn_protection_status)
+```
+
+## Chlorophyll
+```{r}
+#fixing character sea surface temperature columns for NA removal
+rawchlorophyll$chlor_a <- as.numeric(rawchlorophyll$chlor_a)
+rawchlorophyll$longitude <- as.numeric(rawchlorophyll$longitude)
+rawchlorophyll$latitude <- as.numeric(rawchlorophyll$latitude)
+#removing NA values
+cleanchloro <- rawchlorophyll[complete.cases(rawchlorophyll[ , c('chlor_a')]), ]
+#creating a month year column
+cleanchloro$time <- as.POSIXct(cleanchloro$time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+cleanchloro$year_month <- format(cleanchloro$time, "%Y_%m")
+#renaming lat and lon for next step
+cleanchloro <- cleanchloro |>
+  rename(chloro_lat = latitude,
+         chloro_lon = longitude)
+```
+
+```{r}
+combined <- combined |>
+  group_by(year_month) |>
+  group_modify(~ {
+    pred_subset <- cleanchloro |> 
+      filter(year_month == .y$year_month)
+    
+    # handle missing year_month
+    if(nrow(pred_subset) == 0) {
+      .x$chlor_a <- NA
+      return(.x)
+    }
+    
+    nn <- nn2(
+      data = pred_subset[, c("chloro_lon", "chloro_lat")],
+      query = .x[, c("longitude", "latitude")],
+      k = 1
+    )
+    
+    .x$chlor_a <- as.numeric(pred_subset$chlor_a)[as.vector(nn$nn.idx)]
+    .x
+  }) |>
+  ungroup()
+
+combined <- combined |>
+  relocate(chlor_a, .after = sea_surface_temperature_anomaly)
+```
+
+## Fishing
+
+```{r}
+fishing <- fishing |>
+  rename(fish_lat = latitude,
+         fish_lon = longitude,
+         apparent_fishing_hours = Apparent_Fishing_Hours)
+```
+
+```{r}
+distance_threshold <- 0.1
+
+combined <- combined |>
+  group_by(year_month) |>
+  group_modify(~ {
+    pred_subset <- fishing |> 
+      filter(year_month == .y$year_month)
+    
+    if(nrow(pred_subset) == 0) {
+      .x$apparent_fishing_hours <- 0
+      return(.x)
+    }
+    
+    nn <- nn2(
+      data = pred_subset[, c("fish_lon", "fish_lat")],
+      query = .x[, c("longitude", "latitude")],
+      k = 1
+    )
+    
+    .x$apparent_fishing_hours <- as.numeric(ifelse(
+      nn$nn.dists <= distance_threshold,
+      as.numeric(pred_subset$apparent_fishing_hours)[as.vector(nn$nn.idx)],
+      0
+    ))
+    .x
+  }) |>
+  ungroup()
+
+combined <- combined |>
+  relocate(apparent_fishing_hours, .after = chlor_a)
+```
+
+## Shipping
+
+```{r}
+ship <- ship |>
+  rename(ship_lat = latitude,
+         ship_lon = longitude)
+```
+
+```{r}
+distance_threshold <- 0.1
+
+combined <- combined |>
+  group_by(year_month) |>
+  group_modify(~ {
+    pred_subset <- ship |> 
+      filter(year_month == .y$year_month)
+    
+    if(nrow(pred_subset) == 0) {
+      .x$ship_count <- 0
+      return(.x)
+    }
+    
+    nn <- nn2(
+      data = pred_subset[, c("ship_lon", "ship_lat")],
+      query = .x[, c("longitude", "latitude")],
+      k = 1
+    )
+    
+    .x$ship_count <- as.numeric(ifelse(
+      nn$nn.dists <= distance_threshold,
+      as.numeric(pred_subset$ship_count)[as.vector(nn$nn.idx)],
+      0
+    ))
+    .x
+  }) |>
+  ungroup()
+
+combined <- combined |>
+  relocate(ship_count, .after = apparent_fishing_hours)
+```
+
+## Currents
+
+```{r}
+currents <- currents |>
+  rename(current_lat = latitude,
+         current_lon = longitude,
+         current_intensity_score = intensity_score)
+```
+
+
+```{r}
+combined <- combined |>
+  group_by(year_month) |>
+  group_modify(~ {
+    # filter predictor to same time period
+    pred_subset <- currents |> 
+      filter(year_month == .y$year_month) #.y is the set of grouping variable values (in this case, values from the combined dataset)
+    
+    # find nearest neighbor
+    nn <- nn2(
+      data = pred_subset[, c("current_lon", "current_lat")],
+      query = .x[, c("longitude", "latitude")], #.x represents the grouping dataset
+      k = 1
+    )
+    
+    # add matched temperature value
+    .x$current_intensity_score <- pred_subset$current_intensity_score[nn$nn.idx]
+    .x
+  }) |>
+  ungroup()
+
+combined <- combined |>
+  relocate(current_intensity_score, .after = ship_count)
+```
+
+# Final Cleaning and Pivoting
+
+```{r}
+combined <- combined |>
+  relocate(protection, .after = iucn_protection_status)
+```
+
+# Adding Special Calculation columns
+
+```{r}
+combined <- combined |>
+  mutate(log_population = log(population_50km))
+
+combined$year <- as.numeric(combined$year)
+
+combined <- combined |>
+  mutate(years_since_start = year - 2005)
+
+combined <- combined |>
+  relocate(log_population, .after = population_50km)
+
+combined <- combined |>
+  relocate(years_since_start, .after = year)
+
+combined <- combined |>
+  relocate(bioregion, .after = location)
+```
+
+# Removing the one mislabeled point
+
+```{r}
+combined <- combined |>
+  filter(!(latitude == -42.30987 & longitude == 145.19464))
+```
+
+## Fixing Yallock-Bulluk points
+```{r}
+combined |>
+  filter(grepl("Yallock", mpa_name)) |>
+  dplyr::select(mpa_name, protection, mpa_type) |>
+  distinct()
+```
+
+```{r}
+combined <- combined |>
+  mutate(
+    protection = ifelse(grepl("Yallock-Bulluk", mpa_name), "take", protection),
+    mpa_type = ifelse(grepl("Yallock-Bulluk", mpa_name), NA, mpa_type),
+    mpa_name = ifelse(grepl("Yallock-Bulluk", mpa_name), NA, mpa_name)
+  )
+```
+
+```{r}
+unique(combined$mpa_name)
+```
+
+```{r}
+# check no Yallock entries remain in mpa_name
+table(combined$mpa_name, useNA = "always")
+
+# check protection values look right
+table(combined$protection, useNA = "always")
+```
+
+```{r}
+combinedLong <- combined |>
+  pivot_longer(
+    cols = 27:350,
+    names_to = "species",
+    values_to = "abundance"
+  )
+```
+
+```{r}
+write_csv(combined, "combinedInvert.csv")
+write_csv(combinedLong, "combinedLongInvert.csv")
+```

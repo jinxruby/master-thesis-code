@@ -1,0 +1,104 @@
+---
+title: "Shipping"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(foreign)
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(sf)
+```
+
+# Making the sf binding box
+
+```{r}
+fishMasterLong <- read_csv("fishMasterLong.csv")
+
+# Convert your data frame to sf points
+pts <- st_as_sf(fishMasterLong, coords = c("longitude", "latitude"), crs = 4326)
+
+# Bounding box polygon
+range_poly <- st_as_sfc(st_bbox(pts))
+
+# Expand the box by X degrees (e.g., 0.5 degrees)
+bigger_box <- st_buffer(range_poly, dist = 0.5)
+
+#creating test_shape for download of global fish watch data specifically
+test_shape <- st_sf(geometry = bigger_box)
+```
+
+#Trying to read in all files in my shipping folder
+
+#Combining them all
+
+```{r}
+files <- list.files("Shipping Raw Data/Dec",
+                    pattern = "\\.dbf$", full.names = TRUE)
+
+bbox <- st_bbox(test_shape)
+
+data_combined <- lapply(seq_along(files), function(i) {
+  cat("Reading file", i, "of", length(files), "\n")
+  
+  df <- read.dbf(files[i])
+  
+  df |>
+    filter(LON >= bbox["xmin"], LON <= bbox["xmax"],
+           LAT >= bbox["ymin"], LAT <= bbox["ymax"])
+}) |> bind_rows()
+```
+## Cleaning post-downloaded Data so it's less huge!
+### Gameplan: Add year_month column, sum # of instances of a vessel at each lat/lon for each year_month
+
+```{r}
+#Adding year_month
+#CHANGE THE FIRST DF NAME FOR THE MONTH YOU'RE ON
+Dec <- data_combined |>
+  mutate(
+    ts_chr = trimws(as.character(TIMESTAMP)),
+    
+    # If timestamp has no time, append " 00:00:00"
+    ts_fixed = if_else(
+      grepl("^\\d{1,2}/\\d{1,2}/\\d{4}$", ts_chr), #no spaces between 1,2, which is important!!
+      paste0(ts_chr, " 00:00:00"),
+      ts_chr
+    ),
+    
+    parsed_time = dmy_hms(ts_fixed),
+    
+    year_month = sprintf("%04d_%02d", year(parsed_time), month(parsed_time))
+  )
+```
+
+```{r}
+#rounding lat/lon
+#CHANGE DATA NAME HERE
+Dec$longitude <- round(Dec$LON, 1)
+Dec$latitude <- round(Dec$LAT, 1)
+```
+
+```{r}
+#making it counts instead of the whole shebang
+#CHANGE DATA NAME HERE
+Dec <- Dec |>
+  group_by(longitude, latitude, year_month) |>
+  summarise(ship_count = n(), .groups = "drop")
+```
+
+
+```{r}
+#saving it
+#CHANGE DATA NAME HERE
+write.csv(Dec, "shippingdec.csv")
+```
+
+
+

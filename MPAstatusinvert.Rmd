@@ -1,0 +1,165 @@
+---
+title: "MPAStatusInvert"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(rnaturalearth)
+```
+
+# Uploading Data
+## from https://fed.dcceew.gov.au/datasets/erin::collaborative-australian-protected-areas-database-capad-2024-marine/about
+
+```{r}
+mpa <- read_sf("MPA_Status_Shapefile/Collaborative_Australian_Protected_Areas_Database_(CAPAD)_2024_-_Marine.shp")
+```
+
+### using only VIC and TAS data
+```{r}
+mpa <- mpa |>
+  filter(STATE %in% c("TAS", "VIC", "COM"))
+```
+
+
+###checking on coordinate systems
+
+```{r}
+#st_crs(mpa) #checking what the current coordinate system of the file is
+
+mpa <- st_transform(mpa, 4326)
+#turning off S2 because it prevents me from cleaning my geometries (I want to use GCOS to clean geometries not S2)
+#S2 = spherical geometry
+sf_use_s2(FALSE)
+#making my geometries good
+mpa <- st_make_valid(mpa)
+#redrawing my geometries so i won't get errors/double verticies or overlapping lines later
+mpa <- st_buffer(mpa, 0)
+#turning S2 back on
+sf_use_s2(TRUE)
+```
+```{r}
+bad <- which(!st_is_valid(mpa))
+bad
+```
+
+```{r}
+mpa_clean <- mpa[-c(225, 512, 621, 655, 719, 786, 915, 1040, 1078, 1099, 1116, 1639), ]
+```
+
+```{r}
+bad <- which(!st_is_valid(mpa_clean))
+bad
+```
+
+```{r}
+mpa_clean <- mpa_clean[-c(503), ]
+```
+
+```{r}
+bad <- which(!st_is_valid(mpa_clean))
+bad
+```
+
+```{r}
+invertMaster <- read_csv("invertMaster.csv")
+
+invertMaster_sf <- st_as_sf(invertMaster, coords = c("longitude", "latitude"), crs = 4326)
+```
+
+
+# Checking Intersects
+
+```{r}
+combined_with_mpa <- st_join(invertMaster_sf, mpa_clean, join = st_within)
+```
+
+# cleaning this dataset
+
+```{r}
+#removing columns from mpa_clean that aren't relevant to me
+combined_with_mpa <- combined_with_mpa |>
+	dplyr::select(-c(OBJECTID, PA_ID, PA_PID, NRS_PA, NRS_MPA, GAZ_AREA, GIS_AREA, GAZ_DATE, LATEST_GAZ, STATE, AUTHORITY, DATASOURCE, GOVERNANCE, COMMENTS, ENVIRON, OVERLAP, MGT_PLAN, ZONE_TYPE, EPBC, LONGITUDE, LATITUDE, PA_SYSTEM, Shape__Are, Shape__Len, RES_NUMBER))
+```
+
+```{r}
+#moving and renaming columns
+combined_with_mpa <- combined_with_mpa |>
+  rename(mpa_name = NAME,
+         mpa_type = TYPE,
+         mpa_type_abbreviation = TYPE_ABBR,
+         iucn_protection_status = IUCN)
+
+combined_with_mpa <- combined_with_mpa |>
+  relocate(mpa_name, mpa_type, mpa_type_abbreviation, iucn_protection_status, .after = location)
+```
+
+```{r}
+combined_with_mpa$iucn_protection_status <- ifelse(
+  is.na(combined_with_mpa$iucn_protection_status),
+  "unprotected",
+  combined_with_mpa$iucn_protection_status
+)
+```
+
+```{r}
+#filtering for year
+combined_with_mpa <- combined_with_mpa |>
+  filter(year >= 2012, year <= 2023)
+```
+
+```{r}
+combined_with_mpa <- st_drop_geometry(combined_with_mpa)
+```
+
+```{r}
+combined_with_mpa <- combined_with_mpa |>
+  dplyr::select(c(survey_id, mpa_name, mpa_type, mpa_type_abbreviation, iucn_protection_status))
+```
+
+```{r}
+write.csv(combined_with_mpa, "mpaInvert.csv")
+```
+
+
+## next few chunks are because i had an error trying to undo the st transform step from earlier (keeping here so that I know I can use these diagnostic/debugging functions in the future)
+
+```{r}
+#looking to see if anything is empty
+which(st_is_empty(combined_sf))
+```
+
+
+```{r}
+#checking geometry types
+table(st_geometry_type(combined_with_mpa))
+```
+
+```{r}
+#checking for bad points
+bad <- which(!st_is_valid(combined_with_mpa))
+bad
+```
+
+```{r}
+#everytihng looked clean above... is there a NA geometry?
+which(is.na(st_geometry(combined_with_mpa)))
+```
+# Preparing this dataframe for combining with the actual dataframe
+
+
+```{r}
+combined_mpa <- combined_with_mpa |> 
+  st_drop_geometry() |> 
+  mutate(
+    longitude = st_coordinates(combined_sf)[,1],
+    latitude  = st_coordinates(combined_sf)[,2]
+  )
+```

@@ -1,0 +1,126 @@
+---
+title: "ClimateChange"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(raster)
+library(sf)
+library(ncdf4)
+library(terra)
+```
+
+# Okay, this is the marine heatwave data
+## https://www.scidb.cn/en/detail?dataSetId=43cbc3b870e545a2a16967782103b557#p2
+
+```{r}
+nc <- nc_open("MarineHeatwaves/MHW2022/mhws_intensity_2022.01.nc")
+
+vals <- ncvar_get(nc, "mhws_intensity")
+lon <- ncvar_get(nc, "longitude")
+lat <- ncvar_get(nc, "latitude")
+
+nc_close(nc)
+
+# create raster stack from 3D array (each layer = one day)
+r <- rast(apply(vals, 3, function(x) {
+  layer <- rast(t(x),
+                extent = ext(0, 360, -90, 90),
+                crs = "EPSG:4326")
+  layer
+}))
+
+# flip and rotate
+r <- flip(r, "vertical")
+r <- rotate(r)
+
+# plot first day
+#plot(r[[1]])
+#plot(world$geom, add = TRUE, border = "black")
+
+vic_tas <- crop(r, ext(140, 150, -45, -35))
+
+plot(vic_tas[[1]])
+plot(world$geom, add = TRUE, border = "black")
+```
+
+```{r}
+fishMaster <- read_csv("fishMaster.csv")
+
+# Convert your data frame to sf points
+pts <- st_as_sf(fishMaster, coords = c("longitude", "latitude"), crs = 4326)
+
+# Bounding box polygon
+range_poly <- st_as_sfc(st_bbox(pts))
+
+# Expand the box by X degrees (e.g., 0.5 degrees)
+bigger_box <- st_buffer(range_poly, dist = 0.5)
+
+# crop to vic/tas using your bounding box
+vic_tas <- crop(r, bigger_box)
+
+# convert to dataframe
+vic_tas_df <- as.data.frame(vic_tas, xy = TRUE)
+```
+
+```{r}
+# rename layers to day numbers before converting to dataframe
+names(vic_tas) <- paste0("day_", 1:31)
+
+# convert to dataframe
+vic_tas_df <- as.data.frame(vic_tas, xy = TRUE) |>
+  rename(lon = x, lat = y)
+
+# convert to long format
+vic_tas_long <- vic_tas_df |>
+  pivot_longer(cols = -c(lon, lat),
+               names_to = "day",
+               values_to = "mhw_intensity") |>
+  filter(!is.na(mhw_intensity))
+```
+
+want dataframe with all survey points MHW summed over the year (total intensity and # of heatwaves)
+
+Note: The final map issue came from a combination of a slightly unusual NetCDF layout:
+
+longitude/latitude stored as variables rather than dimension variables,
+longitude using 0–360 convention,
+latitude stored south-to-north, which needed flipping for raster display.
+
+## Possibly needed code from MHWprocessing
+
+```{r}
+# get all nc files for 2012
+files_2012 <- list.files("MarineHeatwaves/MHW2012", 
+                          pattern = "\\.nc$", 
+                          full.names = TRUE)
+
+# check they're all there
+length(files_2012)  # should be 12
+files_2012  # check the filenames look right
+```
+
+```{r}
+# test on january 2012
+nc <- nc_open(files_2012[1])
+
+# check what variables are in the file
+print(nc)  # this will show you all variables and dimensions
+
+vals <- ncvar_get(nc, "mhws_intensity")
+lon <- ncvar_get(nc, "longitude")
+lat <- ncvar_get(nc, "latitude")
+nc_close(nc)
+
+# check dimensions
+dim(vals)
+head(lon)
+head(lat)
+```

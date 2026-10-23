@@ -1,0 +1,170 @@
+---
+title: "Combining Sites"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(terra)
+library(sf)
+library(rnaturalearth) #for basemaps
+library(ggsci) #for color palettes
+library(leaflet) #for interactive maps
+```
+
+```{r, include = FALSE}
+fish <- read_csv("combinedFish.csv")
+invert <- read_csv("combinedInvert.csv")
+
+fish <- fish |>
+  dplyr::select(latitude, longitude, location)
+
+invert <- invert |>
+  dplyr::select(latitude, longitude, location)
+
+both <- rbind(fish, invert)
+```
+
+```{r, include = FALSE}
+unique <- both |>
+  dplyr::select(latitude, longitude, location) |>
+  distinct()
+```
+
+```{r, include = FALSE}
+unique_tas <- unique |>
+  filter(location %in% c("Bicheno", "D'Entrecasteaux & Derwent", "Maria Island", "Kent Group", "Flinders Island", "Port Davey", "Ninepin Point", "Rocky Cape", "Tasmania - North", "Tasmania - North East", "Tasmania - South East", "Tasmania - South", "Tasmania - West", "Tinderbox", "Swansea"))
+
+unique_vic <- unique |>
+  filter(location %in% c("Beware Reef", "Bunurong", "Cape Howe", "Gippsland Lakes", "Point Hicks", "Point Addis", "Port Phillip Bay", "Port Phillip Heads", "Victoria - Eastern", "Victoria - North east", "Victoria - western", "Wilsons Promontory"))
+```
+
+```{r, include = FALSE}
+unique_tas <- unique_tas |>
+  mutate(location = case_when(
+    location == "Rocky Cape" ~ "Tasmania - North",
+    location == "Swansea" ~ "Tasmania - North East",
+    location == "Bicheno" ~ "Tasmania - North East",
+    location == "Ninepin Point" ~ "D'Entrecasteaux & Derwent",
+    location == "Tinderbox" ~ "D'Entrecasteaux & Derwent",
+    TRUE ~ location  # keeps all other location names as they are
+  ))
+
+unique_vic <- unique_vic |>
+  mutate(location = case_when(
+    location == "Victoria - North east" ~ "Cape Howe",
+    location == "Beware Reef" ~ "Victoria - Eastern",
+    location == "Point Hicks" ~ "Victoria - Eastern",
+    TRUE ~ location  # keeps all other location names as they are
+  ))
+```
+
+```{r, include = FALSE}
+# convert to sf
+locations_sf <- st_as_sf(unique_tas, 
+                          coords = c("longitude", "latitude"), 
+                          crs = 4326)
+
+# get a basemap
+australia <- ne_states(country = "australia", returnclass = "sf")
+
+# plot
+ggplot() +
+  geom_sf(data = australia) +
+  geom_sf(data = locations_sf, aes(color = location), size = 2) +
+  #geom_sf_text(data = locations_sf, aes(label = location), 
+   #            size = 2.5, vjust = -0.5) +
+  coord_sf(xlim = c(144, 149), ylim = c(-44, -40)) +
+  scale_color_d3() +
+  theme_minimal() +
+  labs(title = "Survey locations by name",
+       color = "Location")
+```
+
+### Tasmanian Locations
+
+```{r, echo = FALSE}
+# extract d3 colours
+d3_colours <- pal_d3()(length(unique(unique_tas$location)))
+
+# use in leaflet
+pal <- colorFactor(palette = d3_colours, domain = unique_tas$location)
+
+leaflet(unique_tas, width = "100%") |>
+  addTiles() |>  # adds OpenStreetMap basemap
+  addCircleMarkers(
+    lng = ~longitude,
+    lat = ~latitude,
+    color = ~pal(location),
+    label = ~paste(location, latitude, longitude, sep = " | "),  # shows location name on hover
+    radius = 5,
+    fillOpacity = 1
+  ) |>
+  addLegend(
+    position = "bottomright",
+    pal = pal,
+    values = ~location,
+    title = "Location"
+  )
+```
+
+#### Questions
+1. There are a few points labeled Tasmania - North East by Freycinet; is this too south to be labeled North East? Should they have a different location name?
+2. Some of the Maria Island points are on the island and some are on the mainland across from the island. Should both be labeled Maria Island?
+3. D'Entrecasteaux & Derwent is very close spatially to Tasmania - South East. Should these be combined?
+4. There are a few points in the wrong spot, like the Tasmania - North East point on the West coast. I don't know if the lat/lon or the location name were entered incorrectly, so what is the best way to address that?
+5. There are some Tasmania - West points by Macquarie Harbour, should they have a different name?
+
+
+### Victorian Locations
+
+```{r, echo = FALSE}
+# extract d3 colours
+d3_colours <- pal_d3()(length(unique(unique_vic$location)))
+
+# use in leaflet
+pal <- colorFactor(palette = d3_colours, domain = unique_vic$location)
+
+leaflet(unique_vic, width = "100%") |>
+  addTiles() |>  # adds OpenStreetMap basemap
+  addCircleMarkers(
+    lng = ~longitude,
+    lat = ~latitude,
+    color = ~pal(location),
+    label = ~paste(location, latitude, longitude, sep = " | "),  # shows location name on hover
+    radius = 5,
+    fillOpacity = 1
+  ) |>
+  addLegend(
+    position = "bottomright",
+    pal = pal,
+    values = ~location,
+    title = "Location"
+  )
+```
+
+#### Questions
+1. I kept the Gippsland Lakes as separate points from Victoria - Eastern because they appear to be more sheltered. Should they be grouped with Victoria - Eastern instead?
+2. Should Cape Howe be included in Victoria - Eastern as well?
+3. It looks like there's only one Victoria - western point. Is this worth keeping?
+4. Should we keep Point Addis separate from Port Phillip Heads?
+5. There are some Port Phillip Bay points that are very close to points from Port Phillip Heads. Do any of those points need to be fixed?
+
+```{r}
+problem_child <- combined |>
+  filter(latitude == -42.30987, longitude == 145.19464)
+```
+
+```{r}
+invertFull <- read_csv("combinedInvert.csv")
+
+problem_child2 <- invertFull |>
+  filter(latitude == -42.30987, longitude == 145.19464)
+```
+

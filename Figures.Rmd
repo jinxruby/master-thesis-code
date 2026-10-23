@@ -1,0 +1,876 @@
+---
+title: "Figures!"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(sf)
+library(tibble)
+library(terra)
+library(DHARMa)
+library(MASS)
+library(mgcv)
+library(emmeans)
+library(ggeffects)
+library(mgcViz)
+library(devtools)
+library(gam.hp)
+library(ggsci)
+library(rnaturalearth) #basemap
+library(patchwork)
+library(cowplot)
+library(gratia)
+library(grid)
+```
+
+```{r}
+citation("rnaturalearth")
+```
+
+
+
+# Location Map
+
+```{r loading stuff, include = FALSE}
+fish <- read_csv("combinedFish.csv")
+invert <- read_csv("combinedInvert.csv")
+
+fishmap <- fish |>
+  dplyr::select(latitude, longitude, location)
+
+invertmap <- invert |>
+  dplyr::select(latitude, longitude, location)
+
+bothmap <- rbind(fishmap, invertmap)
+
+uniquemap <- bothmap |>
+  dplyr::select(latitude, longitude, location) |>
+  distinct()
+
+fishLong <- read_csv("combinedLongFish.csv")
+invertLong <- read_csv("combinedLongInvert.csv")
+
+wrasseFuci <- fishLong |>
+  filter(species == "Notolabrus fucicola")
+abaloneRubr <- invertLong |>
+  filter(species == "Haliotis rubra")
+bastardFors <- fishLong |>
+  filter(species == "Latridopsis forsteri")
+wrasseTetr <- fishLong |>
+  filter(species == "Notolabrus tetricus")
+herringCyan <- fishLong |>
+  filter(species == "Olisthops cyanomelas")
+urchinEryt <- invertLong |>
+  filter(species == "Heliocidaris erythrogramma")
+snailUndu <- invertLong |>
+  filter(species == "Turbo undulatus")
+lobsterEdwa <- invertLong |>
+  filter(species == "Jasus edwardsii")
+
+pwrasse <- readRDS("modelPW.rds")
+babalone <- readRDS("modelBA.rds")
+trumpeter <- readRDS("modelBT.rds")
+bwrasse <- readRDS("modelBW.rds")
+herring <- readRDS("modelHC.rds")
+urchin <- readRDS("modelSU.rds")
+snail <- readRDS("modelTS.rds")
+lobster <- readRDS("modelRL.rds")
+```
+
+```{r bioregion from my data read in, include = FALSE}
+bioregions <- read_sf("Bioregions_shapefile/Bioregions.shp")
+```
+
+
+```{r bioregion read in, include = FALSE}
+#these are in VicGrid on GDA94 projections
+bioregions <- read_sf("Bioregions_shapefile/Bioregions.shp")
+
+bioregions <- bioregions |>
+  filter(MESO_NAME %in% c("Boags", "Bruny", "Davey", "Flinders", "Franklin", "Freycinet", "Otway", "Twofold Shelf", "Victorian Embayments", "Central Victoria", "Central Bass Strait"))
+```
+
+```{r australia basemap, include = FALSE}
+# get australia basemap
+australia <- ne_states(country = "australia", returnclass = "sf")
+```
+
+```{r color palette stuff, include = FALSE}
+# color palette stuff
+d3_cols <- pal_d3(palette = "category20")(length(unique(bioregions$MESO_NAME)))
+
+# create named vector of colours
+bioregion_levels <- levels(factor(bioregions$MESO_NAME))
+names(d3_cols) <- bioregion_levels
+
+# swap Victorian Embayments and Central Bass Strait
+vic_col <- d3_cols["Victorian Embayments"]
+cbs_col <- d3_cols["Central Bass Strait"]
+d3_cols["Victorian Embayments"] <- cbs_col
+d3_cols["Central Bass Strait"] <- vic_col
+
+# see which colour maps to which bioregion
+data.frame(
+  bioregion = levels(factor(bioregions$MESO_NAME)),
+  colour = d3_cols
+)
+```
+
+```{r bioregion sf stuff, include = FALSE}
+# convert polygons to lines
+bioregions_lines <- st_cast(bioregions, "MULTILINESTRING")
+
+bioregions_boundary <- st_boundary(bioregions)
+```
+
+
+```{r region map, echo = FALSE}
+# plot
+ggplot() +
+  # basemap
+  geom_sf(data = australia, fill = "lightgrey", color = "white") +
+  # draw Bass Strait first (behind)
+  geom_sf(data = bioregions |> filter(MESO_NAME == "Central Bass Strait"), 
+          aes(color = MESO_NAME, fill = MESO_NAME),
+          alpha = 0.15, linewidth = 1) +
+  # draw all other bioregions on top
+  geom_sf(data = bioregions |> filter(MESO_NAME != "Central Bass Strait"), 
+          aes(color = MESO_NAME, fill = MESO_NAME),
+          alpha = 0.15, linewidth = 1) +
+  scale_fill_manual(values = d3_cols) +
+  scale_color_manual(values = d3_cols) +
+  guides(fill = "none",
+       color = guide_legend(override.aes = list(fill = d3_cols,
+                                                 alpha = 1,
+                                                 linewidth = 0))) + # hides fill legend, keeps color legend but fills in the boxes
+  # survey points
+  geom_point(data = uniquemap,
+             aes(x = longitude, y = latitude),
+             color = "black", size = 1) +
+  # zoom to vic/tas
+  coord_sf(xlim = c(142.5, 150), ylim = c(-44, -37.5)) +
+  #scale_fill_d3(palette = "category20") +
+  theme_minimal() +
+  labs(title = "Survey locations and bioregions",
+       x = "Longitude",
+       y = "Latitude",
+       color = "Bioregion")
+```
+
+```{r}
+# create the main map (your existing code)
+main_map <- ggplot() +
+  geom_sf(data = australia, fill = "lightgrey", color = "white") +
+  geom_sf(data = bioregions |> filter(MESO_NAME == "Central Bass Strait"), 
+          aes(color = MESO_NAME, fill = MESO_NAME),
+          alpha = 0.15, linewidth = 1) +
+  geom_sf(data = bioregions |> filter(MESO_NAME != "Central Bass Strait"), 
+          aes(color = MESO_NAME, fill = MESO_NAME),
+          alpha = 0.15, linewidth = 1) +
+  scale_fill_manual(values = d3_cols) +
+  scale_color_manual(values = d3_cols) +
+  guides(fill = "none",
+         color = guide_legend(override.aes = list(fill = d3_cols,
+                                                   alpha = 1,
+                                                   linewidth = 0))) +
+  
+  geom_point(data = uniquemap,
+             aes(x = longitude, y = latitude),
+             color = "black", size = 1.15) +
+  coord_sf(xlim = c(141.5, 150), ylim = c(-44, -35.75)) +
+  theme_minimal() +
+  labs(title = "Survey locations and bioregions",
+       x = "Longitude",
+       y = "Latitude",
+       color = "Bioregion")
+
+# create the inset map of all australia
+# with a rectangle showing the study area
+inset_map <- ggplot() +
+  geom_sf(data = australia, fill = "white", color = "black") +
+  # add rectangle showing study area extent
+  annotate("rect", 
+           xmin = 140, xmax = 150, 
+           ymin = -44, ymax = -35,
+           fill = NA, color = "red", linewidth = 1) +
+  coord_sf(xlim = c(113, 154), ylim = c(-44, -10)) +
+  theme_void()  # no axes or labels for inset
+
+# convert inset to grob
+inset_grob <- ggplotGrob(inset_map)
+
+# add inset to main map
+inset_map <- main_map +
+  annotation_custom(
+    grob = inset_grob,
+    xmin = 141,  # position of inset (in map coordinates)
+    xmax = 145,
+    ymin = -38,
+    ymax = -35.5
+  )
+
+inset_map
+```
+
+```{r}
+ggsave(plot = inset_map, "inset_map.pdf")
+```
+
+
+# Gam.hp
+
+```{r hp loading, include = FALSE}
+pwrassehp <- readRDS("hp_purplewrasse.rds")
+bwrassehp <- readRDS("hp_bluethroatwrasse.rds")
+hcalehp <- readRDS("hp_herringcale.rds")
+rlobsterhp <- readRDS("hp_rocklobster.rds")
+tsnailhp <- readRDS("hp_turbosnail.rds")
+surchinhp <- readRDS("hp_shortspinedurchin.rds")
+babalonehp <- readRDS("hp_blacklipabalone.rds")
+```
+
+```{r hp prep, include = FALSE}
+hp_combined <- bind_rows(
+  list(
+  "Purple Wrasse" = pwrassehp,
+  "Bluethroat Wrasse" = bwrassehp,
+  "Herring Cale" = hcalehp,
+  "Rock Lobster" = rlobsterhp,
+  "Turbo Snail" = tsnailhp,
+  "Shortspined Urchin" = surchinhp,
+  "Blacklip Abalone" = babalonehp
+  ),
+  .id = 'species'
+)
+```
+
+
+```{r hp by stressor, echo = FALSE}
+nobioregion <- hp_combined |>
+  filter(variable != "bioregion")
+
+colorscheme <- c("#CC79A7", "#56B4E9", "#E69F00", "#009E73", "#D55E00", "#F0E442", "#0072B2", "#000000")
+  
+# plot
+hp_fig_bioregion <- ggplot(hp_combined, aes(x = reorder(variable, value), y = value, fill = species)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = c(
+    "Purple Wrasse" = "#CC79A7",
+    "Bluethroat Wrasse" = "#56B4E9",
+    "Herring Cale" = "#009E73",
+    "Bastard Trumpeter" = "#E69F00",
+    "Rock Lobster" = "#D55E00",
+    "Turbo Snail" = "#F0E442",
+    "Shortspined Urchin" = "#0072B2",
+    "Blacklip Abalone" = "#000000"
+  )) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Predictor", 
+       y = "Individual contribution (%)", 
+       fill = "Species")
+
+hp_fig_bioregion
+```
+
+```{r adding scientific name column, include = FALSE}
+hp_combined <- hp_combined |>
+    mutate(species = case_when(
+    species == "Blacklip Abalone" ~ "H. rubra",
+    species == "Purple Wrasse" ~ "N. fucicola",
+    species == "Bluethroat Wrasse" ~ "N. tetricus",
+    species == "Herring Cale" ~ "O. cyanomelas",
+    species == "Rock Lobster" ~ "J. edwardsii",
+    species == "Shortspined Urchin" ~ "H. erythrogramma",
+    species == "Turbo Snail" ~ "T. undulatus",
+    TRUE ~ species  # keeps all other location names as they are
+  ))
+
+```
+
+```{r}
+hp_combined$type <- hp_combined$species
+
+hp_combined <- hp_combined |>
+  mutate(type = case_when(
+    type == "H. rubra" ~ "Invertebrates",
+    type == "N. fucicola" ~ "Fishes",
+    type == "N. tetricus" ~ "Fishes",
+    type == "O. cyanomelas" ~ "Fishes",
+    type == "J. edwardsii" ~ "Invertebrates",
+    type == "H. erythrogramma" ~ "Invertebrates",
+    type == "T. undulatus" ~ "Invertebrates"))
+```
+
+```{r}
+hp_combined <- hp_combined |>
+  mutate(variable = case_when(
+    variable == "apparent_fishing_hours" ~ "Commercial Fishing",
+    variable == "total_mhw_intensity" ~ "Annual MHW Intensity",
+    variable == "mhw_days" ~ "Annual MHW Days",
+    variable == "chlor_a" ~ "Chlorophyll a Concentration",
+    variable == "year" ~ "Survey Year",
+    variable == "depth" ~ "Survey Depth",
+    variable == "ship_count" ~ "Shipping",
+    variable == "log_population" ~ "Population",
+    variable == "month" ~ "Survey Month",
+    variable == "current_intensity_score" ~ "Current Change Intensity",
+    variable == "protection" ~ "Protection Status",
+    variable == "bioregion" ~ "Bioregion"
+  ))
+```
+
+```{r hp by species, echo = FALSE}
+# calculate mean contribution per variable across all species
+#variable_order <- hp_combined |>
+#  group_by(variable) |>
+#  summarise(mean_contribution = mean(value, na.rm = TRUE)) |>
+#  arrange(mean_contribution) |>  # largest first
+#  pull(variable)
+
+# apply order to factor
+#hp_combined <- hp_combined |>
+#  mutate(variable = factor(variable, levels = variable_order))
+
+# get bioregion contribution per species for ordering
+#species_order <- hp_combined |>
+#  filter(variable == "Bioregion") |>
+#  arrange(value) |>
+#  pull(species)
+
+# apply order to species factor
+#hp_combined <- hp_combined |>
+#  mutate(species = factor(species, levels = species_order))
+
+# plot with facet_wrap
+hp_fig_species <- ggplot(hp_combined, aes(x = species, y = value, fill = variable)) +
+  geom_col(position = "stack") +
+  scale_fill_d3(palette = "category20") +
+  facet_wrap(~ type, scales = "free_x") +  # free_x so each panel only shows its own species
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic")) +
+  labs(x = "Species", 
+       y = "Individual contribution (%)",
+       title = "Individual Model Contributions by Species",
+       fill = "Covariate")
+
+hp_fig_species
+```
+
+
+```{r}
+# plot
+hp_fig_species <- ggplot(hp_combined, aes(x = species, y = value, fill = variable)) +
+  geom_col(position = "stack") +
+  scale_fill_d3(palette = "category20") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic")) +
+  labs(x = "Species", 
+       y = "Individual contribution (%)",
+       title = "Individual Model Contributions by Species",
+       fill = "Covairate")
+
+hp_fig_species
+```
+
+
+```{r, include = FALSE}
+ggsave(plot = hp_fig_species, "hp_fig_species_updated.jpg", height = 5)
+```
+
+```{r}
+sums <- hp_combined |>
+  group_by(variable) |>
+  summarise(total = sum(value, na.rm = FALSE))
+```
+
+```{r}
+hp_ranked <- hp_combined |>
+  group_by(species) |>
+  mutate(rank = rank(-value, ties.method = "min")) |>  # negative so largest gets rank 1
+  ungroup()
+
+hp_ranked$rank <- as.factor(hp_ranked$rank)
+
+ggplot(hp_ranked, aes(x = variable, fill = rank)) +
+  geom_bar(position = "stack") +
+  scale_fill_d3(palette = "category20") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic")) +
+  labs(x = "Species", 
+       y = "Individual contribution (%)",
+       title = "Individual Model Contributions by Species",
+       fill = "Covairate")
+```
+
+
+
+## Smooths
+
+### Current intensity change
+
+```{r currents setup, include = FALSE}
+currentPWrasse <- smooth_estimates(pwrasse, select = "s(current_intensity_score)")
+currentBWrasse <- smooth_estimates(bwrasse, select = "s(current_intensity_score)")
+currentHerring <- smooth_estimates(herring, select = "s(current_intensity_score)")
+currentTrumpeter <- smooth_estimates(trumpeter, select = "s(current_intensity_score)")
+currentLobster <- smooth_estimates(lobster, select = "s(current_intensity_score)")
+currentUrchin <- smooth_estimates(urchin, select = "s(current_intensity_score)")
+currentBabalone <- smooth_estimates(babalone, select = "s(current_intensity_score)")
+```
+
+```{r currents figs, echo = FALSE}
+CPW <- currentPWrasse |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = current_intensity_score)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#CC79A7") +
+  geom_line(color = "#CC79A7", linewidth = 1.5) +
+  geom_rug(data = wrasseFuci,  # use your actual data
+           aes(x = current_intensity_score),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Current Intensity Score",
+    title = expression(italic("N. fucicola") ~ "- Purple Wrasse")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))  # 80% of default size
+
+CBW <- currentBWrasse |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = current_intensity_score)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#56B4E9") +
+  geom_line(color = "#56B4E9", linewidth = 1.5) +
+  geom_rug(data = wrasseTetr,  # use your actual data
+           aes(x = current_intensity_score),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Current Intensity Score",
+    title = expression(italic("N. tetricus") ~ "- Bluethroat Wrasse")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))  # 80% of default size
+
+CHC <- currentHerring |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = current_intensity_score)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#009E73") +
+  geom_line(color = "#009E73", linewidth = 1.5) +
+  geom_rug(data = herringCyan,  # use your actual data
+           aes(x = current_intensity_score),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Current Intensity Score",
+    title = expression(italic("O. cyanomelas") ~ "- Herring Cale")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))  # 80% of default size
+
+CRL <- currentLobster |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = current_intensity_score)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#D55E00") +
+  geom_line(color = "#D55E00", linewidth = 1.5) +
+  geom_rug(data = lobsterEdwa,  # use your actual data
+           aes(x = current_intensity_score),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Current Intensity Score",
+    title = expression(italic("J. edwardsii") ~ "- Rock Lobster")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))  # 80% of default size
+
+CSU <- currentUrchin |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = current_intensity_score)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#0072B2") +
+  geom_line(color = "#0072B2", linewidth = 1.5) +
+  geom_rug(data = urchinEryt,  # use your actual data
+           aes(x = current_intensity_score),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Current Intensity Score",
+    title = expression(italic("H. erythrogramma") ~ "- Shortspined Urchin")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))  # 80% of default size
+
+CBA <- currentBabalone |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = current_intensity_score)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#000000") +
+  geom_line(color = "#000000", linewidth = 1.5) +
+  geom_rug(data = abaloneRubr,  # use your actual data
+           aes(x = current_intensity_score),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Current Intensity Score",
+    title = expression(italic("H. rubra") ~ "- Blacklip Abalone")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))  # 80% of default size
+
+current1 <- (CPW + CBW) / (CHC + CRL) + 
+  plot_annotation(title = "Partial Effects: Current Change Intensity",
+                  tag_levels = "A")
+
+current2 <- (CSU + CBA) / (plot_spacer()) +
+  plot_annotation(tag_levels = list(c("E", "F")))
+
+current1
+current2
+
+#ggsave(plot = current1, "fig_current1_update.pdf")
+#ggsave(plot = current2, "fig_current2_update.pdf")
+```
+
+### Shipping
+
+```{r shipping setup, include = FALSE}
+shipBWrasse <- smooth_estimates(bwrasse, select = "s(ship_count)")
+shipHerring <- smooth_estimates(herring, select = "s(ship_count)")
+shipLobster <- smooth_estimates(lobster, select = "s(ship_count)")
+shipSnail <- smooth_estimates(snail, select = "s(ship_count)")
+shipUrchin <- smooth_estimates(urchin, select = "s(ship_count)")
+shipBabalone <- smooth_estimates(babalone, select = "s(ship_count)")
+```
+
+```{r shipping figs, echo = FALSE}
+SBW <- shipBWrasse |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = ship_count)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#56B4E9") +
+  geom_line(color = "#56B4E9", linewidth = 1.5) +
+  geom_rug(data = wrasseTetr,  # use your actual data
+           aes(x = ship_count),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Number of Ships (Monthly Total)",
+    title = expression(italic("N. tetricus") ~ "- Bluethroat Wrasse")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+SHC <- shipHerring |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = ship_count)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#009E73") +
+  geom_line(color = "#009E73", linewidth = 1.5) +
+  geom_rug(data = herringCyan,  # use your actual data
+           aes(x = ship_count),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Number of Ships (Monthly Total)",
+    title = expression(italic("O. cyanomelas") ~ "- Herring Cale")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+SRL <- shipLobster |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = ship_count)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#D55E00") +
+  geom_line(color = "#D55E00", linewidth = 1.5) +
+  geom_rug(data = lobsterEdwa,  # use your actual data
+           aes(x = ship_count),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Number of Ships (Monthly Total)",
+    title = expression(italic("J. edwardsii") ~ "- Rock Lobster")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+STS <- shipSnail |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = ship_count)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#F0E442") +
+  geom_line(color = "#F0E442", linewidth = 1.5) +
+  geom_rug(data = snailUndu,  # use your actual data
+           aes(x = ship_count),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Number of Ships (Monthly Total)",
+    title = expression(italic("T. undulatus") ~ "- Turban Snail")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+SSU <- shipUrchin |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = ship_count)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#0072B2") +
+  geom_line(color = "#0072B2", linewidth = 1.5) +
+  geom_rug(data = urchinEryt,  # use your actual data
+           aes(x = ship_count),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Number of Ships (Monthly Total)",
+    title = expression(italic("H. erythrogramma") ~ "- Shortspined Urchin")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+SBA <- shipBabalone |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = ship_count)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#000000") +
+  geom_line(color = "#000000", linewidth = 1.5) +
+  geom_rug(data = abaloneRubr,  # use your actual data
+           aes(x = ship_count),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "Number of Ships (Monthly Total)",
+    title = expression(italic("H. rubra") ~ "- Blacklip Abalone")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+ship1 <- (SBW + SHC) / (SRL + STS) + 
+  plot_annotation(title = "Partial Effects: Shipping Pressure",
+                  tag_levels = "A")
+
+ship2 <- (SSU + SBA) / (plot_spacer()) +
+  plot_annotation(tag_levels = list(c("E", "F")))
+
+ship1
+ship2
+
+#ggsave(plot = ship1, "fig_ship1_update.pdf")
+#ggsave(plot = ship2, "fig_ship2_update.pdf")
+```
+
+### Population
+
+```{r pop setup, include = FALSE}
+popPWrasse <- smooth_estimates(pwrasse, select = "s(log_population)")
+popBWrasse <- smooth_estimates(bwrasse, select = "s(log_population)")
+popHerring <- smooth_estimates(herring, select = "s(log_population)")
+popLobster <- smooth_estimates(lobster, select = "s(log_population)")
+popSnail <- smooth_estimates(snail, select = "s(log_population)")
+popUrchin <- smooth_estimates(urchin, select = "s(log_population)")
+popBabalone <- smooth_estimates(babalone, select = "s(log_population)")
+```
+
+```{r pop figs, echo = FALSE}
+PPW <- popPWrasse |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = log_population)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#CC79A7") +
+  geom_line(color = "#CC79A7", linewidth = 1.5) +
+  geom_rug(data = wrasseFuci,  # use your actual data
+           aes(x = log_population),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "log(Population within 50km)",
+    title = expression(italic("N. fucicola") ~ "- Purple Wrasse")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+PBW <- popBWrasse |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = log_population)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#56B4E9") +
+  geom_line(color = "#56B4E9", linewidth = 1.5) +
+  geom_rug(data = wrasseTetr,  # use your actual data
+           aes(x = log_population),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "log(Population within 50km)",
+    title = expression(italic("N. tetricus") ~ "- Bluethroat Wrasse")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+PHC <- popHerring |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = log_population)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#009E73") +
+  geom_line(color = "#009E73", linewidth = 1.5) +
+  geom_rug(data = herringCyan,  # use your actual data
+           aes(x = log_population),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "log(Population within 50km)",
+    title = expression(italic("O. cyanomelas") ~ "- Herring Cale")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+PRL <- popLobster |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = log_population)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#D55E00") +
+  geom_line(color = "#D55E00", linewidth = 1.5) +
+  geom_rug(data = lobsterEdwa,  # use your actual data
+           aes(x = log_population),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "log(Population within 50km)",
+    title = expression(italic("J. edwardsii") ~ "- Rock Lobster")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+PTS <- popSnail |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = log_population)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#F0E442") +
+  geom_line(color = "#F0E442", linewidth = 1.5) +
+  geom_rug(data = snailUndu,  # use your actual data
+           aes(x = log_population),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "log(Population within 50km)",
+    title = expression(italic("T. undulatus") ~ "- Turban Snail")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+PSU <- popUrchin |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = log_population)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#0072B2") +
+  geom_line(color = "#0072B2", linewidth = 1.5) +
+  geom_rug(data = urchinEryt,  # use your actual data
+           aes(x = log_population),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "log(Population within 50km)",
+    title = expression(italic("H. erythrogramma") ~ "- Shortspined Urchin")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+PBA <- popBabalone |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = log_population)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, fill = "#000000") +
+  geom_line(color = "#000000", linewidth = 1.5) +
+  geom_rug(data = abaloneRubr,  # use your actual data
+           aes(x = log_population),
+           inherit.aes = FALSE, #don't inherit y value from earlier ggplot aes call
+           alpha = 0.3, sides = "b") +
+  labs(
+    y = "Partial Effect",
+    x = "log(Population within 50km)",
+    title = expression(italic("H. rubra") ~ "- Blacklip Abalone")
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = rel(0.95)),
+        axis.title = element_text(size = rel(0.85)))
+
+pop1 <- (PPW + PBW) / (PHC + PRL) + 
+  plot_annotation(title = "Partial Effects: Population",
+                  tag_levels = "A")
+
+pop2 <- (PTS + PSU) / (PBA + plot_spacer()) +
+  plot_annotation(tag_levels = list(c("E", "F", "G")))
+
+pop1
+pop2
+
+#ggsave(plot = pop1, "fig_pop1_updated.pdf")
+#ggsave(plot = pop2, "fig_pop2_updated.pdf")
+```
+
+## Significance Figure?
+
+```{r}
+significance <- read_csv("significance_table.csv")
+```
+
+```{r}
+sig <- ggplot(significance, aes(x = reorder(Stressor, Significant), y = Significant)) +
+  geom_col() +
+  scale_fill_d3() +
+  labs(title = "Significance",
+       x = "Stressor",
+       y = "# Species Significant") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+sig
+```
+

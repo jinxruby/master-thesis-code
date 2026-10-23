@@ -1,0 +1,179 @@
+---
+title: "Bioregions"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(terra)
+library(foreign)
+library(sf)
+library(dplyr)
+library(rnaturalearth) #for basemaps
+library(ggsci) #for color palettes
+library(leaflet) #for interactive maps
+```
+
+```{r}
+#these are in VicGrid on GDA94 projections
+bioregions <- read_sf("Bioregions_shapefile/Bioregions.shp")
+```
+
+
+```{r}
+fish <- read_csv("fishMaster.csv")
+invert <- read_csv("invertMaster.csv")
+```
+
+```{r}
+# convert survey points to sf object
+surveys_sf <- st_as_sf(fish, coords = c("longitude", "latitude"), crs = 4326)
+
+# make sure bioregions are in the same CRS
+bioregions <- st_transform(bioregions, crs = st_crs(surveys_sf))
+
+# spatial join - matches each point to the polygon it falls within
+surveys_with_bioregion <- st_join(surveys_sf, bioregions, join = st_within)
+
+# select just the columns you need
+result_fish <- surveys_with_bioregion |>
+  dplyr::select(survey_id, survey_date, MESO_NAME)
+```
+
+
+```{r}
+# convert survey points to sf object
+surveys_sf <- st_as_sf(invert, coords = c("longitude", "latitude"), crs = 4326)
+
+# make sure bioregions are in the same CRS
+bioregions <- st_transform(bioregions, crs = st_crs(surveys_sf))
+
+# spatial join - matches each point to the polygon it falls within
+surveys_with_bioregion <- st_join(surveys_sf, bioregions, join = st_within)
+
+# select just the columns you need
+result_invert <- surveys_with_bioregion |>
+  dplyr::select(survey_id, survey_date, MESO_NAME)
+```
+
+```{r}
+result_fish <- result_fish |>
+  mutate(
+    longitude = st_coordinates(geometry)[, 1],
+    latitude = st_coordinates(geometry)[, 2]
+  ) |>
+  st_drop_geometry()
+
+result_fish <- result_fish |>
+  rename(bioregion = MESO_NAME)
+
+result_invert <- result_invert |>
+  mutate(
+    longitude = st_coordinates(geometry)[, 1],
+    latitude = st_coordinates(geometry)[, 2]
+  ) |>
+  st_drop_geometry()
+
+result_invert <- result_invert |>
+  rename(bioregion = MESO_NAME)
+```
+
+```{r}
+pts <- st_as_sf(result_fish, coords = c("longitude", "latitude"), crs = 4326)
+
+# 2. Split into known and unknown bioregions
+known <- pts %>% filter(!is.na(bioregion))
+unknown <- pts %>% filter(is.na(bioregion))
+
+# 3. Find nearest known neighbor for each unknown point
+nn_index <- st_nearest_feature(unknown, known)
+
+# 4. Pull bioregions from nearest known points
+unknown$bioregion <- known$bioregion[nn_index]
+
+# 5. Combine back together
+filled_fish <- bind_rows(known, unknown) %>% 
+  arrange(row_number())
+```
+
+```{r}
+pts <- st_as_sf(result_invert, coords = c("longitude", "latitude"), crs = 4326)
+
+# 2. Split into known and unknown bioregions
+known <- pts %>% filter(!is.na(bioregion))
+unknown <- pts %>% filter(is.na(bioregion))
+
+# 3. Find nearest known neighbor for each unknown point
+nn_index <- st_nearest_feature(unknown, known)
+
+# 4. Pull bioregions from nearest known points
+unknown$bioregion <- known$bioregion[nn_index]
+
+# 5. Combine back together
+filled_invert <- bind_rows(known, unknown) %>% 
+  arrange(row_number())
+```
+
+
+```{r}
+regions_fish <- st_drop_geometry(filled_fish)
+
+regions_invert <- st_drop_geometry(filled_invert)
+```
+
+```{r}
+write_csv(regions_fish, "bioregionsFish.csv")
+write_csv(regions_invert, "bioregionsInvert.csv")
+```
+
+# This is Troubleshooting Code that probably won't work in the future bc combined is from combinedCorrectResolutions
+
+okay so let's hope that you don't have to do this again, because what you did was combine the results from the section above (bioregionsFish and bioregionsInvert) with the rest of the dataset in the combinedCorrectResolutions code, and then brought that back to the code below to match nearest neighbors and correct it, which is then saved and put back into combinedCorrectResolutions :)
+
+```{r}
+fish <- read_csv("combinedFish.csv")
+fish <- fish |>
+  dplyr::select(latitude, longitude, bioregion, location)
+
+invert <- read_csv("combinedInvert.csv")
+invert <- invert |>
+  dplyr::select(latitude, longitude, bioregion, location)
+```
+
+
+
+(leaflet maps to ID NA areas)
+
+```{r}
+# extract d3 colours
+d3_colours <- pal_d3()(length(unique(invert$bioregion)))
+
+# use in leaflet
+pal <- colorFactor(palette = d3_colours, domain = invert$bioregion)
+
+leaflet(fish, width = "100%") |>
+  addTiles() |>  # adds OpenStreetMap basemap
+  addCircleMarkers(
+    lng = ~longitude,
+    lat = ~latitude,
+    color = ~pal(bioregion),
+    label = ~paste(location, bioregion, latitude, longitude, sep = " | "), #shows on hover
+    radius = 5,
+    fillOpacity = 1
+  ) |>
+  addLegend(
+    position = "bottomright",
+    pal = pal,
+    values = ~bioregion,
+    title = "Location"
+  )
+```
+
+
+

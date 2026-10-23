@@ -1,0 +1,187 @@
+---
+title: "Cleaning RLS Data"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(broom)
+library(sf)
+```
+
+# Import Data and bin off rows where RSL teams didn't see any species in the taxonomic group
+
+```{r}
+fishRaw <- read_csv("ep_m1_fish_victoria_tasmania.csv") |> 
+  filter(!str_detect(recorded_species_name, pattern = "No species found"))
+
+invertRaw <- read_csv("ep_m2_invert_victoria_tasmania.csv") |>
+  filter(!str_detect(recorded_species_name, pattern = "No species found"))
+```
+
+```{r}
+#checking structure of the dfs
+str(fishRaw)
+str(invertRaw)
+```
+
+## Wrangling: summing species for each transect, during each year, pivoted so cols are on the vertical
+### Making latitude and longitude datasets to join with density data later
+
+```{r}
+#basically combining the lat/long from the surveys (bc they did four transects at the same location and logged each in its own row, so need to combine entries that have the same survey id, site code, name, location, and date and average their lat/longs to get the location)
+fishLatLon <- fishRaw |>
+  mutate(year = as.Date(survey_date) |> format("%Y")) |>
+  dplyr::select(survey_id, site_code, site_name, location, latitude, longitude, year, survey_date, depth) |>
+  group_by(survey_id, site_name, site_code, survey_date, location) |>
+  summarise(latitude = mean (latitude, na.rm = TRUE), longitude = mean (longitude, na.rm = TRUE), depth = mean(depth)) |>
+  ungroup()
+```
+
+## Checking that each site had a unique lat/long and that there aren't two sites with different IDs but identical lat/longs
+```{r}
+temp <- fishLatLon |>
+  group_by(site_code) |>
+  summarise(longitude = mean(longitude, na.rm = TRUE),
+            latitude = mean(latitude, na.rm = TRUE)) |>
+  st_as_sf(coords = c("longitude", "latitude"), crs = "EPSG:4326")
+```
+
+```{r}
+length(unique(temp$site_code)) #188
+length(unique(temp$geometry)) #187
+```
+
+## Finding any duplicated geoms
+
+```{r}
+distinct <- dplyr::distinct(temp, geometry, .keep_all = TRUE)
+dupedGeom <- temp[!(temp$site_code %in% distinct$site_code),]
+#finding all rows with this geom identified
+identified <- temp[temp$geometry == dupedGeom$geometry,] #PPB25 and PPB8 have identical lat/longs (St Leonards and St Leonards rock wall)
+```
+
+## Same for Inverts
+
+```{r}
+invertLatLon <- invertRaw |>
+  mutate(year = as.Date(survey_date) |> format("%Y")) |>
+  dplyr::select(survey_id, site_code, site_name, location, latitude, longitude, year, survey_date, depth) |>
+  group_by(survey_id, site_name, site_code, survey_date, location) |>
+  summarise(latitude = mean (latitude, na.rm = TRUE), longitude = mean (longitude, na.rm = TRUE), depth = mean(depth)) |>
+  ungroup()
+```
+
+## Checking that each site had a unique lat/long and that there aren't two sites with different IDs but identical lat/longs
+```{r}
+temp2 <- invertLatLon |>
+  group_by(site_code) |>
+  summarise(longitude = mean(longitude, na.rm = TRUE),
+            latitude = mean(latitude, na.rm = TRUE)) |>
+  st_as_sf(coords = c("longitude", "latitude"), crs = "EPSG:4326")
+```
+
+```{r}
+length(unique(temp2$site_code)) #187
+length(unique(temp2$geometry)) #186
+```
+
+## Finding any duplicated geoms
+
+```{r}
+distinct2 <- dplyr::distinct(temp2, geometry, .keep_all = TRUE)
+dupedGeom2 <- temp2[!(temp2$site_code %in% distinct2$site_code),]
+#finding all rows with this geom identified
+identified <- temp2[temp2$geometry == dupedGeom2$geometry,] #PPB25 and PPB8 have identical lat/longs (St Leonards and St Leonards rock wall)
+```
+
+# Occurrence Matrix for Fish and Inverts
+
+```{r}
+fishCounts <- fishRaw |>
+  mutate(year = as.Date(survey_date) |> format("%Y")) |>
+  dplyr::select(survey_id, site_code, site_name, location, year, survey_date, species_name, total) |>
+  group_by(survey_id, site_name, site_code, survey_date, year, location, species_name) |>
+  summarise(count = sum(total, na.rm = TRUE)) |>
+  pivot_wider(id_cols = c("survey_id", "site_name", "site_code", "survey_date", "location", "year"), names_from = "species_name", values_from = "count", values_fill = 0) |>
+  mutate(XID = paste(site_code, survey_date, sep = "_")) |>
+  dplyr::filter(!site_code == "PPB8") #drop the st leonards data bc duplicate
+
+head(fishCounts)
+```
+
+```{r}
+invertCounts <- invertRaw |>
+  mutate(year = as.Date(survey_date) |> format("%Y")) |>
+  dplyr::select(survey_id, site_code, site_name, location, year, survey_date, species_name, total) |>
+  group_by(survey_id, site_name, site_code, survey_date, year, location, species_name) |>
+  summarise(count = sum(total, na.rm = TRUE)) |>
+  pivot_wider(id_cols = c("survey_id", "site_name", "site_code", "survey_date", "location", "year"), names_from = "species_name", values_from = "count", values_fill = 0) |>
+  mutate(XID = paste(site_code, survey_date, sep = "_")) |>
+  dplyr::filter(!site_code == "PPB8") #drop the st leonards data bc duplicate
+
+head(invertCounts)
+```
+
+# Combining Datasets!!
+
+```{r}
+fishMaster <- full_join(fishLatLon, fishCounts) |>
+  na.omit() #drops the PPB8 site bc we made LatLon before we knew to drop it
+
+names(fishMaster)
+```
+
+```{r}
+invertMaster <- full_join(invertLatLon, invertCounts) |>
+  na.omit()
+
+names(invertMaster)
+```
+
+# Saving as CSV files
+
+```{r}
+write.csv(fishMaster, "fishMaster.csv")
+write.csv(invertMaster, "invertMaster.csv")
+```
+
+#############################
+
+# Making it in the Long Format
+
+```{r}
+#XID is in the wrong spot, moving it
+
+fishMaster <- relocate(fishMaster, XID, .before = "site_name")
+
+invertMaster <- relocate(invertMaster, XID, .before = "site_name")
+
+```
+
+
+```{r}
+fishMasterLong <- fishMaster |>
+  pivot_longer(
+    cols = 11:320,
+    names_to = "species",
+    values_to = "abundance"
+  )
+```
+
+```{r}
+invertMasterLong <- invertMaster |>
+  pivot_longer(
+    cols = 11:333,
+    names_to = "species",
+    values_to = "abundance"
+  )
+```
+
+

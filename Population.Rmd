@@ -1,0 +1,173 @@
+---
+title: "Population"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+```
+
+# Uploading Data
+## Data from https://digital.atlas.gov.au/datasets/digitalatlas::abs-estimated-resident-population-sa2-2001-to-2023/about
+## converting population to a projection so the datasets can talk to each other
+### landed on CRS 28355 using this website: https://epsg.org/search/by-name/sessionkey/gd8wvem06u/polygon/%7B%22type%22%3A%22polygon%22%2C%22coordinates%22%3A%5B%5B%5B140.84%2C-44.57%5D%2C%5B150.13%2C-44.57%5D%2C%5B150.13%2C-37.23%5D%2C%5B140.84%2C-37.23%5D%2C%5B140.84%2C-44.57%5D%5D%5D%7D/crs_sort_by/type/crs_sort_dir/desc#crs
+
+```{r}
+rawpop <- st_read("Population Info/ABS_ERP_2001_2023_SA2.shp")
+
+pop <- st_transform(rawpop, crs = 28355)
+```
+
+
+# Goal: Determine populations within 50 and 100 km radius of my surveys (no human gravity yet)
+
+```{r}
+# rough bounding box around data
+combined <- read_csv("combined.csv")
+# Convert your data frame to sf points
+pts <- st_as_sf(combined, coords = c("longitude", "latitude"), crs = 4326)
+
+# Bounding box polygon
+range_poly <- st_as_sfc(st_bbox(pts))
+
+# Expand the box by X degrees (e.g., 1 degree)
+bigger_box <- st_buffer(range_poly, dist = 1)
+
+bigger_box <- st_transform(bigger_box, crs = 28355)
+
+population_filtered <- st_filter(pop, bigger_box)
+```
+
+```{r}
+# i don't think i need this
+bbox_region <- st_bbox(c(xmin = 125, xmax = 155, ymin = -52, ymax = -30), 
+                        crs = 4326) %>%
+  st_as_sfc() %>%
+  st_transform(crs = 28355)
+
+population_filtered <- st_filter(pop, bbox_region)
+```
+
+## making the actual radii around the survey points (using wrasseMonthly for time being but can be changed obv)
+```{r}
+#you might need to put in a reading the data line here depending on the workflow
+#fishMaster <- read_csv("fishMaster.csv")
+
+combinedYears <- combined |>
+  filter(year >= 2013, year <= 2022)
+
+# make sure survey points are sf object
+fish_sf <- st_as_sf(combinedYears, coords = c("longitude", "latitude"), crs = 4326)
+
+# transform to a projected CRS for accurate distance measurements in meters (using CRS 28355)
+fish_sf <- st_transform(fish_sf, crs = 28355)
+
+# create 50km and 100km buffers
+#st_buffer makes circular buffers by default
+buffers_50km <- st_buffer(fish_sf, dist = 50000)
+buffers_100km <- st_buffer(fish_sf, dist = 100000)
+```
+
+## Finding Intersects
+
+```{r}
+#intersect_100km <- st_intersection(population_filtered, buffers_100km)
+#intersect_50km <- intersect_100km |>
+  #filter(as.numeric(st_distance(st_centroid(geometry), survey_point)) <= 50000)
+```
+
+```{r}
+#simplifying buffers a bit to make calculations easier
+buffers_100km <- st_simplify(buffers_100km, dTolerance = 100)
+```
+
+
+```{r}
+intersect_50km <- map_dfr(1:nrow(buffers_50km), function(i) {
+  cat("Processing buffer", i, "of", nrow(buffers_50km), "\n")
+  st_intersection(population_filtered, buffers_50km[i,])
+})
+#intersect_50km creates a dataframe with one row for each intersection point. so if survey A intersects with 5 regions, intersect_50km will have 5 rows, each row corresponding to one region that intersects survey A's buffer. the geometry at the end represents the shape of the region that intersects with survey A's buffer.
+```
+
+## Calculating population  within 50 km 
+
+```{r}
+#renaming columns so i can actually match them to the year dates
+intersect_50km <- intersect_50km |>
+  rename(pop_2012 = erp_no_212,
+         pop_2013 = erp_no_213,
+         pop_2014 = erp_no_214,
+         pop_2015 = erp_no_215,
+         pop_2016 = erp_no_216,
+         pop_2017 = erp_no_217,
+         pop_2018 = erp_no_218,
+         pop_2019 = erp_no_219,
+         pop_2020 = erp_no_220,
+         pop_2021 = erp_no_221,
+         pop_2022 = erp_no_222)
+```
+
+```{r}
+# 1. calculate original areas
+population_filtered <- population_filtered |>
+  mutate(orig_area = as.numeric(st_area(geometry)))
+
+# 2. join orig_area onto intersect_50km using whatever ID column 
+# uniquely identifies each population polygon
+intersect_50km <- intersect_50km |>
+  left_join(
+    st_drop_geometry(population_filtered) |> 
+      select(sa2_code_2, orig_area),
+    by = "sa2_code_2"
+  )
+```
+
+```{r}
+# calculate areas outside rowwise (much faster)
+intersect_50km <- intersect_50km |>
+  mutate(
+    intersect_area = as.numeric(st_area(geometry))
+  )
+
+# then do the rowwise part only for the column selection (much less work)
+population_50km <- intersect_50km |>
+  rowwise() |>
+  mutate(
+    correct_pop = get(paste0("pop_", year)),
+    pop_in_buffer = correct_pop * (intersect_area / orig_area)
+  ) |>
+  ungroup()
+```
+
+
+```{r}
+readablepop <- population_50km |>
+  select(c(sa2_code_2, sa2_name_2, survey_id, XID, survey_date, orig_area, intersect_area, correct_pop, pop_in_buffer))
+```
+
+
+```{r}
+rawpopulation <- readablepop |>
+  group_by(survey_id) |>
+  summarise(
+    population = sum(pop_in_buffer, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+rawpopulation <- st_drop_geometry(rawpopulation)
+```
+
+```{r}
+write.csv(rawpopulation, "rawpopulation.csv")
+```
+

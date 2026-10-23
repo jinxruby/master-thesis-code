@@ -1,0 +1,316 @@
+---
+title: "BluethroatWrasse"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_dir = "Individual_Species_Models/Fish") })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(sf)
+library(FNN)
+library(gfwr)
+library(httr2)
+library(jsonlite)
+library(tibble)
+library(terra)
+library(DHARMa)
+library(MASS)
+library(mgcv)
+library(emmeans)
+library(ggeffects)
+library(mgcViz)
+library(ggsci) #for color palettes
+library(gam.hp)
+```
+
+```{r, include = FALSE}
+fish <- read_csv("combinedLongFish.csv")
+fish$month <- as.numeric(fish$month)
+fish$iucn_protection_status <- as.factor(fish$iucn_protection_status)
+fish$iucn_protection_status <- factor(fish$iucn_protection_status, levels = c("unprotected", "IV", "III", "II"))
+fish$protection <- as.factor(fish$protection)
+fish$protection <- factor(fish$protection, levels = c("take", "no take"))
+fish <- fish |>
+  mutate(bioregion = relevel(factor(bioregion), ref = "Central Victoria"))
+```
+
+```{r, include = FALSE}
+wrasseTetr <- fish |>
+  filter(species == "Notolabrus tetricus")
+
+wrasseTetr <- wrasseTetr |>
+  rename(mean_abundance = abundance)
+```
+
+## Bluethroat Wrasse Pop Over Time
+
+```{r, echo = FALSE}
+Bwrasse <- ggplot(wrasseTetr,
+                 aes(x = year,
+                     y = mean_abundance)) +
+  geom_point(position = "jitter") +
+  labs(title = "Bluethroat Wrasse Population Trend", x = "Year", y = "Monthly Abundance") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) #have to put after theme_minimal() or it will get overridden
+
+Bwrasse
+```
+
+```{r, echo = FALSE}
+bioregion <- ggplot(wrasseTetr,
+                 aes(x = bioregion,
+                     y = mean_abundance)) +
+  geom_point(position = "jitter") +
+  labs(title = "Bluethroat Wrasse Population by Bioregion", x = "Bioregion", y = "Monthly Abundance") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) #have to put after theme_minimal() or it will get overridden
+
+bioregion
+```
+
+## "Basic" Model
+
+```{r GAM Model}
+model1 <- gam(mean_abundance ~
+               te(total_mhw_intensity, mhw_days, k = c(5, 5)) +
+               s(chlor_a, k = 8) +
+               s(current_intensity_score, k = 8) +
+               s(apparent_fishing_hours, k = 8) +
+               s(ship_count, k = 8) +
+               s(log_population, k = 8) +
+               protection +
+               s(year) +
+               s(depth, k = 8) +
+               bioregion +
+               s(month, bs = "cc", k = 8), data = wrasseTetr, family = nb(), method = 'REML'
+)
+
+summary(model1)
+
+saveRDS(model1, "modelBW.rds")
+```
+
+
+```{r}
+library(broom)
+library(writexl)
+```
+
+```{r}
+
+# extract model output as a clean dataframe
+model_output <- tidy(model1, parametric = TRUE)
+
+# write to excel
+write_xlsx(model_output, "model_output2.xlsx")
+```
+
+
+```{r Diagnostics, fig.show = "hold"}
+gam.check(model1)
+```
+
+```{r Visualisation, echo = FALSE}
+#visualization
+# get predictions for all terms
+all_effects <- ggpredict(model1)
+
+# plot all at once
+plot(all_effects)
+```
+
+```{r Visualisation, echo = FALSE}
+#visualization
+# get predictions for all terms
+all_effects <- ggpredict(model1)
+
+# convert to list of ggplots
+plot_list <- lapply(all_effects, plot)
+```
+
+```{r}
+# check which index is bioregion
+names(plot_list)  # or names(all_effects)
+
+# modify the bioregion plot specifically (e.g. if it's index 10)
+plot_list[[1]] <- plot_list[[1]] +
+  labs(title = "Total MHW Intensity", x = "MHW Intensity (Annual Sum)", y = "Predicted Abundance")
+
+plot_list[[2]] <- plot_list[[2]] +
+  labs(title = "Total MHW Days", x = "MHW Days (Annual Sum)", y = "Predicted Abundance")
+
+plot_list[[3]] <- plot_list[[3]] +
+  labs(title = "Chlorophyll a Concentration", x = "Chlorophyll a Concentration", y = "Predicted Abundance")
+
+plot_list[[4]] <- plot_list[[4]] +
+  labs(title = "Current Change Intensity", x = "Current Change Intensity Score", y = "Predicted Abundance")
+
+plot_list[[5]] <- plot_list[[5]] +
+  labs(title = "Commercial Fishing", x = "Commercial Fishing Hours (Monthly Total)", y = "Predicted Abundance")
+
+plot_list[[6]] <- plot_list[[6]] +
+  labs(title = "Shipping", x = "Number of Ships (Monthly Total)", y = "Predicted Abundance")
+
+plot_list[[7]] <- plot_list[[7]] +
+  labs(title = "Population", x = "log(Population within 50 km)", y = "Predicted Abundance")
+
+plot_list[[8]] <- plot_list[[8]] +
+  labs(title = "Protection Status", x = "Protection Status", y = "Predicted Abundance")
+
+plot_list[[9]] <- plot_list[[9]] +
+  labs(title = "Survey Year", x = "Year", y = "Predicted Abundance")
+
+plot_list[[10]] <- plot_list[[10]] +
+  labs(title = "Survey Depth", x = "Depth", y = "Predicted Abundance")
+
+plot_list[[11]] <- plot_list[[11]] +
+  labs(title = "Bioregion", x = "Bioregion", y = "Predicted Abundance") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6))
+
+plot_list[[12]] <- plot_list[[12]] +
+  labs(title = "Survey Month", x = "Month", y = "Predicted Abundance")
+```
+
+```{r}
+first <- plot_list[[1]] + plot_list[[2]] + plot_list[[3]] + plot_list[[4]] + plot_list[[5]] + plot_list[[6]]
+
+pt1 <- wrap_plots(first, ncol = 1) +
+  plot_annotation(title = "Partial effects plots — Notolabrus tetricus")
+
+second <- plot_list[[7]] + plot_list [[8]] + plot_list[[9]] + plot_list[[10]] + plot_list[[11]] + plot_list[[12]]
+
+pt2 <- wrap_plots(second, ncol = 1)
+
+ggsave("appendix_pwrasse1.pdf", pt1,
+       width = 18, height = 10, dpi = 300)
+
+ggsave("appendix_pwrasse2.pdf", pt2,
+       width = 18, height = 10, dpi = 300)
+```
+
+
+```{r 3D Visualisation}
+vis.gam(model1, 
+        view = c("total_mhw_intensity", "mhw_days"),  # the two variables in your tensor smooth
+        theta = 45,  # horizontal rotation angle
+        phi = 20,    # vertical rotation angle
+        color = "heat",
+        type = "response")
+```
+
+
+```{r Concurvity Figure, echo = FALSE}
+# get pairwise concurvity
+conc <- concurvity(model1, full = FALSE)
+
+# extract the worst case matrix and convert to long format
+conc_df <- as.data.frame(conc$worst) |>
+  rownames_to_column("smooth1") |>
+  pivot_longer(-smooth1, 
+               names_to = "smooth2", 
+               values_to = "concurvity")
+
+# plot heatmap
+ggplot(conc_df, aes(x = smooth1, y = smooth2, fill = concurvity)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "red",
+                      limits = c(0, 1)) +
+  geom_text(aes(label = round(concurvity, 2)), size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Pairwise concurvity (worst case)",
+       x = "", y = "", fill = "Concurvity")
+```
+
+## Testing for autocorrelation
+
+```{r Correlation Prep, include = FALSE}
+# find which rows were actually used in the model
+used_rows <- as.integer(rownames(model1$model))
+
+# filter dataframe to only those rows
+correlation <- wrasseTetr[used_rows, ] |>
+  mutate(year_month_num = as.numeric(as.Date(paste0(year_month, "_01"),
+                                             format = "%Y_%m_%d")))
+
+# verify
+nrow(correlation)  # should be 1004
+```
+
+```{r Spatial Autocorrelation, echo = FALSE}
+# simulate residuals
+sim_res <- simulateResiduals(model1)
+
+# aggregate residuals by location (for spatial autocorrelation test)
+sim_res_agg <- recalculateResiduals(sim_res, 
+                                     group = paste(correlation$longitude, 
+                                                   correlation$latitude))
+
+# get unique locations for the test
+unique_locs <- correlation |>
+  distinct(longitude, latitude)
+
+testSpatialAutocorrelation(sim_res_agg,
+                           x = unique_locs$longitude,
+                           y = unique_locs$latitude)
+```
+
+```{r Temporal Autocorrelation, echo = FALSE}
+# step 1: find valid time periods
+valid_times <- correlation |>
+  group_by(year_month_num) |>
+  summarise(n = n()) |>
+  filter(n > 1) |>
+  pull(year_month_num)
+
+# step 2: create logical vector (must be same length as sim_res = 1004)
+valid_logical <- correlation$year_month_num %in% valid_times
+
+# check length before proceeding
+cat("sim_res length:", length(sim_res$scaledResiduals), "\n")
+cat("valid_logical length:", length(valid_logical), "\n")
+cat("valid rows:", sum(valid_logical), "\n")
+
+# step 3: recalculate residuals
+sim_res_agg_time <- recalculateResiduals(sim_res, 
+                                          group = correlation$year_month_num,
+                                          sel = valid_logical)
+
+# step 4: test
+unique_time <- sort(unique(correlation$year_month_num[valid_logical]))
+testTemporalAutocorrelation(sim_res_agg_time,
+                            time = unique_time)
+```
+
+## Hierarchical Partitioning Calculations
+
+```{r HP calculations, echo = FALSE}
+hp_result <- gam.hp(model1)
+
+hp_result
+```
+
+```{r HP plot, echo = FALSE}
+# convert to dataframe
+hp_df <- data.frame(
+  variable = rownames(hp_result$hierarchical.partitioning),
+  value = hp_result$hierarchical.partitioning[, "I.perc(%)"]  # change column name as needed
+)
+
+# plot in ggplot2
+ggplot(hp_df, aes(x = reorder(variable, value), y = value)) +
+  geom_col() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "", y = "Individual contribution", title = "Hierarchical Partitioning Results")
+```
+
+```{r}
+saveRDS(hp_df, "hp_bluethroatwrasse.rds")
+```

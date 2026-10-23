@@ -1,0 +1,322 @@
+---
+title: "MHW_import"
+author: "Noelle Huget"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, results = 'hold', fig.show = 'hold')
+```
+
+```{r}
+library(tidyverse)
+library(raster)
+library(sf)
+library(ncdf4)
+library(terra)
+library(rnaturalearth) #for world map
+library(RANN)
+```
+
+## Reading in fish/invert data and Binding Box Creation
+
+```{r}
+fishMaster <- read_csv("fishMaster.csv")
+
+# Convert your data frame to sf points
+pts <- st_as_sf(fishMaster, coords = c("longitude", "latitude"), crs = 4326)
+
+# Bounding box polygon
+range_poly <- st_as_sfc(st_bbox(pts))
+
+# Expand the box by X degrees (e.g., 0.5 degrees)
+bigger_box <- st_buffer(range_poly, dist = 0.5)
+```
+```{r}
+fishMaster <- fishMaster |>
+  filter(year >= 2012, year <= 2022)
+fishMaster <- fishMaster |>
+  dplyr::select("latitude", "longitude", "survey_date", "survey_id")
+
+invertMaster <- read_csv("invertMaster.csv")
+invertMaster <- invertMaster |>
+  filter(year >= 2012, year <= 2022)
+invertMaster <- invertMaster |>
+  dplyr::select("latitude", "longitude", "survey_date", "survey_id")
+```
+
+
+## START HERE
+## Reading in data by one year's file - CHANGE YEAR
+
+```{r}
+process_mhw_file <- function(filepath) {
+  # read in
+  r <- rast(filepath)
+  
+  # set correct spatial information
+  ext(r) <- ext(0, 360, -90, 90)
+  crs(r) <- "EPSG:4326"
+  
+  # flip and rotate
+  r <- flip(r, "vertical")
+  r <- rotate(r)
+  
+  # crop to vic/tas
+  r <- crop(r, bigger_box)
+  
+  return(r)
+}
+
+# apply to all 2012 files
+files_2020 <- list.files("MarineHeatwaves/MHW2020", #CHANGE YEAR
+                          pattern = "\\.nc$", 
+                          full.names = TRUE)
+```
+
+```{r}
+rasters <- lapply(files_2022, process_mhw_file) #CHANGE YEAR
+```
+
+## Plotting each month to make sure the data transformed correctly
+
+```{r}
+#creating world outline
+world <- ne_countries(scale = "medium", returnclass = "sf")
+# set up a plotting grid for 12 months
+par(mfrow = c(3, 4), mar = c(2, 2, 2, 2))  # 3 rows, 4 columns
+
+# month names for titles
+month_names <- c("January", "February", "March", "April", "May", "June",
+                 "July", "August", "September", "October", "November", "December")
+
+# plot first layer of each month
+for(i in 1:12) {
+  plot(rasters[[i]][[5]], 
+       main = paste("MHW", month_names[i]),
+       range = c(0,5),
+       legend = FALSE)
+  plot(world$geom, add = TRUE, border = "black")
+}
+
+# reset plotting parameters
+par(mfrow = c(1, 1))
+```
+## Checks before running my dfcoversion function
+
+```{r}
+length(rasters) #want to make sure we have 12 rasters; one for each month
+sapply(rasters, nlyr) #want to make sure i have the correct number of days per month (this is basically telling me how many layers each monthly raster has, so the first monthly one should have 31, and then 28(or 29 for leap year) and then 31, 30, etc)
+```
+## Converting rasters to dataframes - YEAR CHANGE
+
+```{r}
+dfconversion <- function(raster_list, year) {
+  month_numbers <- sprintf("%02d", 1:12) #basically just generates a list of numbers from 01-12
+  #renaming layers to day numbers
+  monthly_dfs <- lapply(1:12, function(i) {
+    r <- raster_list[[i]]
+    #get days in each month for column naming purposes
+    n_days <- nlyr(r) # gives number of layers in a raster (from terra package)
+    # rename layers to dates
+    day_numbers <- sprintf("%02d", 1:n_days) #writing out days as two digit numbers
+    names(r) <- paste(year, month_numbers[i], day_numbers, sep = "-") #this is a replacement function that assigns new names to an object (in this case, assigning new names to r, which is a raster picked from my raster list, the past side of this line is telling names what to replace the titles of r's columns with)
+    
+    # convert to dataframe
+    df <- as.data.frame(r, xy = TRUE) |> #r is a specific raster from the raster list
+      rename(longitude = x, latitude = y)
+    
+    df #tells r to return the final df as the output (basically if this isn't there r will create df but not return it when we call the function monthly_dfs)
+  })
+  # combine all months
+  reduce(monthly_dfs, left_join, by = c("longitude", "latitude")) #reduce applies left_join across all 12 monthly_dfs, left_join only combines two dfs at a time
+}  
+```
+
+```{r}
+#will run this at the end to apply the function to every raster
+mhw_df <- dfconversion(rasters, 2022) #CHANGE YEAR
+```
+
+## Matching df to combined datasets to make sure everything has a match - YEAR CHANGE
+
+```{r}
+#nearest neighbor combine
+#determining nearest neighbor using mhw data and checking it against my fish data (will eventually include an invert one as well)
+nn <- nn2(
+  data = mhw_df[, c("longitude", "latitude")],
+  query = fishMaster[, c("longitude", "latitude")],
+  k = 1
+) #i believe this step returns indicies?
+
+# extract all MHW day columns (everything except lon and lat)
+mhw_cols <- mhw_df |> 
+  dplyr::select(-longitude, -latitude)
+
+# get the matched rows from mhw data using nn indices
+matched_mhw <- mhw_cols[as.vector(nn$nn.idx), ]
+
+# combine with survey data
+fish_mhw_2022 <- cbind(fishMaster, matched_mhw) #CHANGE YEAR
+
+#and now inverts
+nn <- nn2(
+  data = mhw_df[, c("longitude", "latitude")],
+  query = invertMaster[, c("longitude", "latitude")],
+  k = 1
+) #i believe this step returns indicies?
+
+# extract all MHW day columns (everything except lon and lat)
+mhw_cols <- mhw_df |> 
+  dplyr::select(-longitude, -latitude)
+
+# get the matched rows from mhw data using nn indices
+matched_mhw <- mhw_cols[as.vector(nn$nn.idx), ]
+
+# combine with survey data
+invert_mhw_2022 <- cbind(invertMaster, matched_mhw) #CHANGE YEAR
+```
+
+# Saving it at the end - YEAR CHANGE
+```{r}
+write.csv(fish_mhw_2022, "fish_mhw_2022.csv")
+write.csv(invert_mhw_2022, "invert_mhw_2022.csv")
+```
+
+```{r}
+fish_mhw_2012 <- read_csv("fish_mhw_2012.csv")
+fish_mhw_2013 <- read_csv("fish_mhw_2013.csv")
+fish_mhw_2014 <- read_csv("fish_mhw_2014.csv")
+fish_mhw_2015 <- read_csv("fish_mhw_2015.csv")
+fish_mhw_2016 <- read_csv("fish_mhw_2016.csv")
+fish_mhw_2017 <- read_csv("fish_mhw_2017.csv")
+fish_mhw_2018 <- read_csv("fish_mhw_2018.csv")
+fish_mhw_2019 <- read_csv("fish_mhw_2019.csv")
+fish_mhw_2020 <- read_csv("fish_mhw_2020.csv")
+fish_mhw_2021 <- read_csv("fish_mhw_2021.csv")
+fish_mhw_2022 <- read_csv("fish_mhw_2022.csv")
+invert_mhw_2012 <- read_csv("invert_mhw_2012.csv")
+invert_mhw_2013 <- read_csv("invert_mhw_2013.csv")
+invert_mhw_2014 <- read_csv("invert_mhw_2014.csv")
+invert_mhw_2015 <- read_csv("invert_mhw_2015.csv")
+invert_mhw_2016 <- read_csv("invert_mhw_2016.csv")
+invert_mhw_2017 <- read_csv("invert_mhw_2017.csv")
+invert_mhw_2018 <- read_csv("invert_mhw_2018.csv")
+invert_mhw_2019 <- read_csv("invert_mhw_2019.csv")
+invert_mhw_2020 <- read_csv("invert_mhw_2020.csv")
+invert_mhw_2021 <- read_csv("invert_mhw_2021.csv")
+invert_mhw_2022 <- read_csv("invert_mhw_2022.csv")
+```
+
+
+
+## Combine all data (at end)
+```{r}
+totalFishMHW <- reduce(list(fish_mhw_2012, fish_mhw_2013, fish_mhw_2014, fish_mhw_2015, fish_mhw_2016, fish_mhw_2017, fish_mhw_2018, fish_mhw_2019, fish_mhw_2020, fish_mhw_2021, fish_mhw_2022), left_join, by = c("longitude", "latitude", "survey_id", "survey_date")) |>
+  dplyr::select(-starts_with("..."))
+
+totalInvertMHW <- reduce(list(invert_mhw_2012, invert_mhw_2013, invert_mhw_2014, invert_mhw_2015, invert_mhw_2016, invert_mhw_2017, invert_mhw_2018, invert_mhw_2019, invert_mhw_2020, invert_mhw_2021, invert_mhw_2022), left_join, by = c("longitude", "latitude", "survey_id", "survey_date")) |>
+  dplyr::select(-starts_with("..."))
+
+#reduce requires its input as a list, hence why we have list(MHW dataframes)
+```
+
+```{r}
+write_csv(totalFishMHW, "totalFishMHW.csv")
+write_csv(totalInvertMHW, "totalInvertMHW.csv")
+```
+
+```{r}
+totalFishMHW <- read_csv("totalFishMHW.csv")
+totalInvertMHW <- read_csv("totalInvertMHW.csv")
+```
+
+
+# doing my MHW calculations
+```{r}
+system.time({
+  MHW_metrics_fish <- totalFishMHW |> 
+  pivot_longer(cols = -c(survey_id, longitude, latitude, survey_date),
+               names_to = "date",
+               values_to = "mhw_intensity") |>
+  mutate(date = as.Date(date)) |>
+  group_by(survey_id) |> #does the following calculations to only one survey at a time
+  group_modify(~ {
+    survey_dt <- as.Date(.x$survey_date[1]) #.x is data for current group (totalFishMHW) #because we're using a long pivot (aka there are thousands of rows for each day for each survey) the [1] indexes the first date entry so we don't have to do it thousands of times.
+    year_prior <- .x |>
+      filter(date >= survey_dt - 365 & date <= survey_dt) #because survey_dt is in as a date, when we use numbers like this R will count them as days; so survey_dt - 365 is one year earlier (doing 365 even though there are leap years because it makes more sense for it to be a consistent number of days in the dataframe than it be exactly one year to the day; so some of these periods would technically be one day off because the leap year fucks with things)
+    total_intensity <- sum(year_prior$mhw_intensity, na.rm = TRUE)
+    mhw_days <- sum(year_prior$mhw_intensity > 1, na.rm = TRUE)
+    is_mhw <- year_prior |>
+      arrange(date) |>
+      mutate( #adding new columns for the calculations
+        is_heatwave = mhw_intensity > 1,
+        new_event = is_heatwave & !lag(is_heatwave, default = FALSE) #lag shifts a vector back by one positon (basically returns the value before the one you're currently looking at). so this is looking for events that pass the criteria for being a heatwave, but whose lag returns FALSE (why there's the ! for not): basically, looking for events that are heatwaves and where the previous day is NOT a heatwave. default = FALSE means that the first day will default to false (aka we're going to pretend like the value the day before the first day is always 0 so that if this period starts in the middle of a heatwave it still gets counted)
+      )
+    # 5 consecutive day definition
+is_mhw <- is_mhw |>
+  mutate(
+    # count consecutive heatwave days using run length encoding
+    run_id = cumsum(!is_heatwave),  # increments every time we hit a non-heatwave day
+    # for each run of heatwave days, check if it's 5+ days long
+    run_length = ave(is_heatwave, run_id, FUN = sum),  # counts length of each run
+    qualifies = is_heatwave & run_length >= 5,  # only days in runs of 5+ count
+    # detect start of new qualifying heatwave event
+    new_event_5day = qualifies & !lag(qualifies, default = FALSE)
+  )
+
+n_events_5day <- sum(is_mhw$new_event_5day, na.rm = TRUE)
+    n_events <- sum(is_mhw$new_event, na.rm = TRUE)
+    
+# extract peak intensity from each qualifying 5+ day event and sum them
+qualifying_days <- is_mhw |> filter(qualifies)
+
+peak_intensity_sum <- if(nrow(qualifying_days) == 0) {
+  0  # no qualifying events, sum is 0
+} else {
+  qualifying_days |>
+    group_by(run_id) |>
+    summarise(peak = max(mhw_intensity, na.rm = TRUE)) |>
+    pull(peak) |>
+    sum(na.rm = TRUE)
+}
+
+    tibble(#like earlier, taking the first value of lat/lon it will be the same for many columns in the long format
+      longitude = .x$longitude[1],
+      latitude = .x$latitude[1],
+      survey_date = survey_dt,
+      total_mhw_intensity = total_intensity,
+      mhw_days = mhw_days,
+      n_mhw_events = n_events,
+      n_5day_mhw_events = n_events_5day,
+      peak_intensity_sum = peak_intensity_sum
+    )
+  }) |>
+  ungroup()
+})
+```
+```{r}
+# check if you got results
+nrow(MHW_metrics_fish)
+head(MHW_metrics_fish)
+```
+
+```{r}
+mhw <- ggplot(MHW_metrics_fish,
+                 aes(x = survey_date,
+                     y = peak_intensity_sum)) +
+  geom_point() +
+  labs(title = "MHW Events", x = "time", y = "Intensity Sums") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) #have to put after theme_minimal() or it will get overridden
+
+mhw
+```
+
+
+```{r}
+write_csv(MHW_metrics_fish, "MHWFish.csv")
+write_csv(MHW_metrics_invert, "MHWInvert.csv")
+```
+
